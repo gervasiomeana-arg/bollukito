@@ -1,0 +1,6 @@
+{
+  "name": "Hotel Bolluk - Bollukito Bot",
+  "description": "Bot de WhatsApp con Inteligencia Artificial y la mascota Bollukito para reservas directas y notificaciones automáticas a recepción en Hotel Bolluk.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

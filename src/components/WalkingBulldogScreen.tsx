@@ -460,16 +460,12 @@ export function WalkingBulldogScreen({ hotelName = 'Hotel Bolluk' }: WalkingBull
               <div className="absolute inset-0 rounded-full bg-amber-400/15 filter blur-xl animate-pulse -z-10" />
             )}
 
-            {/* Cartoon 3D Mascot Image */}
+            {/* Mascot Image */}
             <div className="relative flex items-center justify-center">
               <img
-                src={
-                  currentPose === 'walking' || isWalking
-                    ? '/bollukito_cartoon_walking.png'
-                    : '/bollukito_cartoon_presenting.png'
-                }
-                alt="Bollukito Bulldog Francés Caricatura 3D"
-                className={`${sizeClasses[dogSize]} object-contain drop-shadow-[0_16px_32px_rgba(0,0,0,0.40)] hover:brightness-110 active:scale-95 transition-transform`}
+                src="/bollukito.jpg"
+                alt="Bollukito Bulldog Francés"
+                className={`${sizeClasses[dogSize]} rounded-full object-cover shadow-2xl ring-4 ring-amber-400/80 hover:brightness-110 active:scale-95 transition-transform`}
                 draggable={false}
                 referrerPolicy="no-referrer"
               />
@@ -614,9 +610,9 @@ export function WalkingBulldogScreen({ hotelName = 'Hotel Bolluk' }: WalkingBull
               <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 flex items-center space-x-4">
                 <div className="w-20 h-20 rounded-2xl bg-amber-400/10 border border-amber-400/30 flex items-center justify-center overflow-hidden shrink-0">
                   <img
-                    src="/bollukito_cartoon_presenting.png"
-                    alt="Bollukito Caricatura 3D"
-                    className="w-16 h-16 object-contain"
+                    src="/bollukito.jpg"
+                    alt="Bollukito"
+                    className="w-16 h-16 rounded-xl object-cover"
                   />
                 </div>
                 <div>

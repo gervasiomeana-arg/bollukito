@@ -5,9 +5,10 @@
  */
 
 const DB_NAME = 'BollukitoDB';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_NAME = 'media';
-const VIDEO_KEY = 'walking_bulldog_video_v3_clean';
+const VIDEO_KEY = 'bollukito_video_v5_puppy';
+const OLD_KEYS = ['walking_bulldog_video_v3_clean', 'walking_bulldog_video_v2', 'walking_bulldog_video'];
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -24,7 +25,18 @@ function openDB(): Promise<IDBDatabase> {
       }
     };
 
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      // Asynchronously purge obsolete video keys
+      try {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        for (const oldKey of OLD_KEYS) {
+          store.delete(oldKey);
+        }
+      } catch (e) {}
+      resolve(db);
+    };
     request.onerror = () => reject(request.error || new Error('Failed to open IndexedDB'));
   });
 }

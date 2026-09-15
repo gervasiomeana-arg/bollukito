@@ -1,8 +1,10 @@
-import { useState, type FormEvent } from 'react';
+import { useState, useEffect, type FormEvent } from 'react';
 import {
   Building,
   Save,
   CheckCircle2,
+  AlertCircle,
+  Loader2,
   Code2,
   Sparkles,
   Plus,
@@ -13,6 +15,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { HotelConfig, HotelKnowledgeItem } from '../types';
+import { InventoryManagement } from './InventoryManagement';
 
 interface HotelConfigPanelProps {
   config: HotelConfig;
@@ -21,14 +24,122 @@ interface HotelConfigPanelProps {
 
 export function HotelConfigPanel({ config, onSaveConfig }: HotelConfigPanelProps) {
   const [formData, setFormData] = useState<HotelConfig>({ ...config });
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [activeMascotAnim, setActiveMascotAnim] = useState<'breathe' | 'happy' | 'wiggle'>('breathe');
 
-  const handleSubmit = (e: FormEvent) => {
+  // Load configuration from PostgreSQL on mount
+  useEffect(() => {
+    let isMounted = true;
+    setIsLoading(true);
+    setErrorMessage(null);
+
+    fetch('/api/hotel-config')
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error(`Error al cargar configuración (${res.status})`);
+        }
+        return res.json();
+      })
+      .then((data) => {
+        if (!isMounted) return;
+        const pgConfig = data?.hotelConfig || data;
+        if (pgConfig && (pgConfig.checkInTime || pgConfig.checkOutTime || pgConfig.id)) {
+          setFormData((prev) => {
+            const updated: HotelConfig = {
+              ...prev,
+              checkInTime: pgConfig.checkInTime ?? prev.checkInTime,
+              checkOutTime: pgConfig.checkOutTime ?? prev.checkOutTime,
+              breakfastHours: pgConfig.breakfastInfo ?? prev.breakfastHours,
+              breakfastInfo: pgConfig.breakfastInfo ?? prev.breakfastInfo,
+              parkingInfo: pgConfig.parkingInfo ?? prev.parkingInfo,
+              petPolicy: pgConfig.petPolicy ?? prev.petPolicy,
+              cancellationPolicy: pgConfig.cancellationPolicy ?? prev.cancellationPolicy,
+              depositPolicy: pgConfig.depositPolicy ?? prev.depositPolicy,
+              services: pgConfig.services ?? prev.services,
+            };
+            onSaveConfig(updated);
+            return updated;
+          });
+        }
+      })
+      .catch((err) => {
+        console.error('Error fetching hotel config from PostgreSQL:', err);
+        if (isMounted) {
+          setErrorMessage('No se pudo cargar la configuración desde PostgreSQL. Se muestran valores locales.');
+        }
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    onSaveConfig(formData);
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 3000);
+    if (isSaving) return;
+    setIsSaving(true);
+    setSavedSuccess(false);
+    setErrorMessage(null);
+
+    try {
+      const payload = {
+        checkInTime: formData.checkInTime || '',
+        checkOutTime: formData.checkOutTime || '',
+        breakfastInfo: formData.breakfastInfo ?? formData.breakfastHours ?? '',
+        parkingInfo: formData.parkingInfo || '',
+        petPolicy: formData.petPolicy || '',
+        cancellationPolicy: formData.cancellationPolicy || '',
+        depositPolicy: formData.depositPolicy || '',
+        services: formData.services || '',
+      };
+
+      const response = await fetch('/api/hotel-config', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        throw new Error('No se pudo guardar la configuración');
+      }
+
+      const result = await response.json();
+      const saved = result?.hotelConfig || result;
+      if (saved) {
+        const updated: HotelConfig = {
+          ...formData,
+          checkInTime: saved.checkInTime ?? formData.checkInTime,
+          checkOutTime: saved.checkOutTime ?? formData.checkOutTime,
+          breakfastHours: saved.breakfastInfo ?? formData.breakfastHours,
+          breakfastInfo: saved.breakfastInfo ?? formData.breakfastInfo,
+          parkingInfo: saved.parkingInfo ?? formData.parkingInfo,
+          petPolicy: saved.petPolicy ?? formData.petPolicy,
+          cancellationPolicy: saved.cancellationPolicy ?? formData.cancellationPolicy,
+          depositPolicy: saved.depositPolicy ?? formData.depositPolicy,
+          services: saved.services ?? formData.services,
+        };
+        setFormData(updated);
+        onSaveConfig(updated);
+      }
+
+      setSavedSuccess(true);
+      setTimeout(() => setSavedSuccess(false), 3000);
+    } catch (err: any) {
+      console.error('Error saving hotel config to PostgreSQL:', err);
+      setErrorMessage('No se pudo guardar la configuración');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleAddKnowledgeItem = () => {
@@ -78,7 +189,7 @@ export function HotelConfigPanel({ config, onSaveConfig }: HotelConfigPanelProps
         <div className="flex items-center space-x-5">
           <div className="relative shrink-0">
             <img
-              src="/bollukito.jpg"
+              src="/bollukito_avatar.jpg?v=5"
               alt="Bollukito Animado"
               className={`w-20 h-20 sm:w-24 sm:h-24 rounded-2xl object-cover ring-4 ring-emerald-400/80 shadow-2xl ${
                 activeMascotAnim === 'happy'
@@ -161,17 +272,41 @@ export function HotelConfigPanel({ config, onSaveConfig }: HotelConfigPanelProps
 
           <button
             type="submit"
-            className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center space-x-2 shadow-sm transition-colors"
+            disabled={isSaving}
+            className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white rounded-xl text-xs font-bold flex items-center space-x-2 shadow-sm transition-colors cursor-pointer disabled:cursor-not-allowed"
           >
-            <Save className="w-4 h-4" />
-            <span>Guardar Cambios</span>
+            {isSaving ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Guardando...</span>
+              </>
+            ) : (
+              <>
+                <Save className="w-4 h-4" />
+                <span>Guardar Cambios</span>
+              </>
+            )}
           </button>
         </div>
+
+        {isLoading && (
+          <div className="mx-6 mt-4 p-3 bg-blue-50 border border-blue-200 rounded-xl text-blue-800 text-xs font-medium flex items-center">
+            <Loader2 className="w-4 h-4 mr-2 text-blue-600 shrink-0 animate-spin" />
+            <span>Cargando configuración desde PostgreSQL...</span>
+          </div>
+        )}
+
+        {errorMessage && (
+          <div className="mx-6 mt-4 p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs font-medium flex items-center">
+            <AlertCircle className="w-4 h-4 mr-2 text-rose-600 shrink-0" />
+            <span>{errorMessage}</span>
+          </div>
+        )}
 
         {savedSuccess && (
           <div className="mx-6 mt-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs font-medium flex items-center">
             <CheckCircle2 className="w-4 h-4 mr-2 text-emerald-600 shrink-0" />
-            <span>¡Configuración y Base de Conocimiento actualizadas! Bollukito ya aprendió todas las respuestas.</span>
+            <span>Configuración guardada</span>
           </div>
         )}
 
@@ -273,12 +408,41 @@ export function HotelConfigPanel({ config, onSaveConfig }: HotelConfigPanelProps
               />
             </div>
             <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">Horario Desayuno Buffet</label>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Información / Horario Desayuno Buffet</label>
               <input
                 type="text"
-                value={formData.breakfastHours}
-                onChange={(e) => setFormData({ ...formData, breakfastHours: e.target.value })}
+                value={formData.breakfastInfo ?? formData.breakfastHours}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    breakfastHours: e.target.value,
+                    breakfastInfo: e.target.value,
+                  })
+                }
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Estacionamiento / Parking</label>
+              <input
+                type="text"
+                value={formData.parkingInfo || ''}
+                onChange={(e) => setFormData({ ...formData, parkingInfo: e.target.value })}
+                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                placeholder="Ej: Estacionamiento disponible"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Política de Mascotas</label>
+              <input
+                type="text"
+                value={formData.petPolicy || ''}
+                onChange={(e) => setFormData({ ...formData, petPolicy: e.target.value })}
+                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                placeholder="Ej: Consultar condiciones"
               />
             </div>
           </div>
@@ -442,6 +606,9 @@ export function HotelConfigPanel({ config, onSaveConfig }: HotelConfigPanelProps
           </div>
         </div>
       </form>
+
+      {/* Real Inventory Management (room_types and rooms) */}
+      <InventoryManagement />
 
       {/* Guide: How to connect to real WhatsApp Cloud API */}
       <div className="bg-slate-900 rounded-2xl p-6 text-white border border-slate-800 space-y-4 shadow-sm">

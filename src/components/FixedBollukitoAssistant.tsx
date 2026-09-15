@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, type DragEvent } from 'react';
+import React, { useState, useEffect, useRef, useCallback, type DragEvent } from 'react';
 import {
   Volume2,
   VolumeX,
@@ -37,13 +37,24 @@ export function FixedBollukitoAssistant({
   // Minimize/expand state
   const [isMinimized, setIsMinimized] = useState(false);
 
-  // Video & Chroma states - initialized with user's permanent video
-  const [videoUrl, setVideoUrl] = useState<string | null>('/luma_walking_video.mp4');
+  // Video & Chroma states - initialized without obsolete video
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [isVideoPlaying, setIsVideoPlaying] = useState(true);
-  const [isMuted, setIsMuted] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
   const [isStoredLocally, setIsStoredLocally] = useState(true);
   const [useChromaKey, setUseChromaKey] = useState(false);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState<string | null>(null);
+
+  // Video aspect ratio & centering control (960x640 is 1.5 ratio)
+  const [videoAspect, setVideoAspect] = useState<number>(1.5);
+  const [fitMode, setFitMode] = useState<'contain' | 'cover'>(() => {
+    return (localStorage.getItem('bollukito_fit_mode') as any) || 'contain';
+  });
+  const [videoAlignment, setVideoAlignment] = useState<'center' | 'top' | 'bottom'>(() => {
+    return (localStorage.getItem('bollukito_video_align') as any) || 'center';
+  });
 
   // Position preference: 'whatsapp-top' (in the frame of WhatsApp screen), 'whatsapp-center', 'whatsapp-bottom'
   const [positionPreference, setPositionPreference] = useState<'whatsapp-top' | 'whatsapp-center' | 'whatsapp-bottom'>(() => {
@@ -316,15 +327,38 @@ export function FixedBollukitoAssistant({
     }
   };
 
-  // Start complete presentation
-  const startPresentation = () => {
-    stopPresentation();
+  // Unmute and play with voice
+  const handleUnmuteAndPlay = (e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    setIsMuted(false);
     playChime();
     setIsSpeaking(true);
 
     if (videoRef.current) {
+      videoRef.current.muted = false;
+      videoRef.current.volume = 1.0;
+      videoRef.current.play().catch((err) => {
+        console.warn('Video playback with audio error:', err);
+      });
+    }
+
+    setSpeechBubble('🐾 ¡Escuchando la voz de Bollukito! 🛎️');
+  };
+
+  // Start complete presentation with full voice sound
+  const startPresentation = () => {
+    stopPresentation();
+    playChime();
+    setIsSpeaking(true);
+    setIsMuted(false);
+
+    if (videoRef.current) {
       videoRef.current.currentTime = 0;
-      videoRef.current.muted = isMuted;
+      videoRef.current.muted = false;
+      videoRef.current.volume = 1.0;
       videoRef.current.play().catch((err) => {
         console.warn('Video playback error:', err);
       });
@@ -393,36 +427,72 @@ export function FixedBollukitoAssistant({
     return () => clearTimeout(timer);
   }, []);
 
-  // Upload custom Luma video file
+  // Upload custom Bollukito video file (.mp4, .mov, .webm)
   const handleFileUpload = async (file: File) => {
-    if (!file.type.startsWith('video/') && !file.name.endsWith('.mp4')) {
-      alert('Por favor selecciona un archivo de video .mp4');
+    // Flexible validation: check MIME type or common extensions
+    const isVideo =
+      file.type.startsWith('video/') ||
+      /\.(mp4|mov|webm|m4v|mkv)$/i.test(file.name);
+
+    if (!isVideo) {
+      alert(`El archivo "${file.name}" no parece ser un video compatible. Por favor selecciona un archivo .mp4, .mov o .webm.`);
       return;
     }
 
+    setIsUploading(true);
+    setUploadMessage('Procesando video de Bollukito...');
+    setSpeechBubble('🐾 Subiendo y procesando video...');
+
     try {
+      // 1. Save in IndexedDB for instant offline and browser reload persistence
       await saveVideoPermanently(file);
-      const url = URL.createObjectURL(file);
-      setVideoUrl(url);
+
+      // 2. Set blob URL for instantaneous playback
+      const localUrl = URL.createObjectURL(file);
+      setVideoUrl(localUrl);
       setIsStoredLocally(true);
 
-      // Backup to server
-      const reader = new FileReader();
-      reader.onload = async () => {
-        try {
-          await fetch('/api/upload-video', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ videoBase64: reader.result }),
+      // 3. Immediately start video playback
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.src = localUrl;
+          videoRef.current.currentTime = 0;
+          videoRef.current.muted = true; // Muted enables instant autoplay in modern browsers
+          videoRef.current.play().catch((err) => {
+            console.log('Video autoplay caught:', err);
           });
-        } catch (e) {}
-      };
-      reader.readAsDataURL(file);
+        }
+      }, 50);
+
+      // 4. Send raw binary stream directly to server (up to 150MB, fast, zero base64 memory overhead)
+      try {
+        const res = await fetch('/api/upload-video-binary', {
+          method: 'POST',
+          headers: { 'Content-Type': file.type || 'video/mp4' },
+          body: file,
+        });
+        if (res.ok) {
+          console.log('Video saved to server storage successfully');
+        }
+      } catch (serverErr) {
+        console.warn('Server upload background note:', serverErr);
+      }
 
       setShowSettingsModal(false);
-      setSpeechBubble('¡Video cargado con éxito! 🐾🎬');
-    } catch (e) {
+      setUploadMessage('¡Video cargado con éxito! 🐾🎬');
+      setSpeechBubble('¡Guau! ¡Tu video de Bollukito se cargó con éxito! 🐾🎬');
+
+      // Clear input element so re-uploading the same file works
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    } catch (e: any) {
       console.error('Error saving video:', e);
+      alert('Hubo un inconveniente al guardar el video: ' + (e?.message || 'Error desconocido'));
+      setSpeechBubble('🐾 No se pudo cargar el video.');
+    } finally {
+      setIsUploading(false);
+      setTimeout(() => setUploadMessage(null), 5000);
     }
   };
 
@@ -470,7 +540,7 @@ export function FixedBollukitoAssistant({
           >
             <div className="relative">
               <img
-                src="/bollukito.jpg"
+                src="/bollukito_avatar.jpg?v=5"
                 alt="Bollukito"
                 className="w-7 h-7 rounded-full object-cover ring-2 ring-amber-300 shadow-md group-hover:rotate-6 transition-transform"
               />
@@ -484,11 +554,18 @@ export function FixedBollukitoAssistant({
         </div>
       )}
 
-      {/* FIXED BOLLUKITO AT THE RIGHT OF THE SCREEN (IN THE FRAME OF THE WHATSAPP SCREEN) */}
+      {/* FIXED BOLLUKITO AT THE RIGHT OF THE SCREEN (HUGGING THE WHATSAPP FRAME) */}
       {isVisible && (
         <aside
           id="fixed-bollukito-assistant"
-          className={`fixed right-3 sm:right-6 xl:right-8 z-40 flex flex-col items-end pointer-events-none select-none transition-all duration-300 ${
+          style={{
+            // Keeps Bollukito directly hugging the WhatsApp frame's right edge
+            // WhatsApp is centered at max-w-4xl (896px), so its right edge is at 50vw + 448px.
+            // On desktop, Bollukito sits 4-8px right next to WhatsApp.
+            // On smaller viewports, clamp ensures he stays comfortably within screen bounds.
+            left: 'max(0.75rem, min(calc(50vw + 452px), calc(100vw - 340px)))',
+          }}
+          className={`fixed z-40 flex flex-col items-start pointer-events-none select-none transition-all duration-300 ${
             positionPreference === 'whatsapp-top'
               ? 'top-20 sm:top-24 xl:top-28'
               : positionPreference === 'whatsapp-center'
@@ -504,7 +581,7 @@ export function FixedBollukitoAssistant({
             >
               <div className="w-7 h-7 rounded-full bg-amber-400/20 flex items-center justify-center overflow-hidden border border-amber-400/40">
                 <img
-                  src="/luma_video_poster.jpg"
+                  src="/bollukito_avatar.jpg?v=5"
                   alt="Bollukito Miniatura"
                   className="w-7 h-7 object-cover"
                 />
@@ -602,12 +679,21 @@ export function FixedBollukitoAssistant({
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
             >
+              {/* Uploading progress overlay */}
+              {isUploading && (
+                <div className="absolute inset-0 z-35 bg-slate-950/92 rounded-3xl flex flex-col items-center justify-center p-4 text-center backdrop-blur-md">
+                  <div className="w-10 h-10 border-4 border-amber-400 border-t-transparent rounded-full animate-spin mb-3"></div>
+                  <span className="text-xs font-bold text-white">Subiendo video de Bollukito...</span>
+                  <span className="text-[11px] text-amber-300 mt-1">{uploadMessage || 'Guardando en alta calidad'}</span>
+                </div>
+              )}
+
               {/* If no video is uploaded yet, prominent 1-click upload helper */}
               {!videoUrl && (
                 <button
                   onClick={() => fileInputRef.current?.click()}
-                  className="absolute -top-3 left-1/2 -translate-x-1/2 z-20 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 font-black text-[11px] px-3 py-1 rounded-full shadow-xl border border-amber-300 flex items-center space-x-1.5 whitespace-nowrap transition-transform hover:scale-105"
-                  title="Haz clic para seleccionar tu video .mp4 de Luma"
+                  className="absolute -top-3 left-1/2 -translate-x-1/2 z-20 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 font-black text-[11px] px-3.5 py-1.5 rounded-full shadow-xl border border-amber-300 flex items-center space-x-1.5 whitespace-nowrap transition-transform hover:scale-105 pointer-events-auto"
+                  title="Haz clic para seleccionar tu video .mp4 de Bollukito"
                 >
                   <Upload className="w-3.5 h-3.5" />
                   <span>📂 Cargar mi video .mp4</span>
@@ -625,33 +711,81 @@ export function FixedBollukitoAssistant({
 
               {/* Mascot 3D Stage Card */}
               <div
-                className={`relative flex flex-col items-center justify-center transition-all ${
-                  sizePreference === 'lg'
-                    ? 'w-56 h-72 sm:w-64 sm:h-80'
-                    : 'w-48 h-64 sm:w-52 sm:h-70'
-                }`}
+                className="relative flex flex-col items-center justify-center transition-all"
+                style={{
+                  width: sizePreference === 'lg' ? '320px' : '280px',
+                  maxWidth: 'calc(100vw - 32px)',
+                }}
               >
                 {/* Background Pedestal & Ambient Glow */}
-                <div className="absolute inset-x-4 bottom-2 h-20 bg-gradient-to-t from-slate-950/80 via-slate-900/40 to-transparent rounded-3xl -z-10 border-b border-amber-400/30" />
-                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-4/5 h-6 bg-black/40 rounded-full blur-[8px] -z-10" />
+                <div className="absolute inset-x-4 bottom-2 h-16 bg-gradient-to-t from-slate-950/80 via-slate-900/40 to-transparent rounded-3xl -z-10 border-b border-amber-400/30" />
+                <div className="absolute bottom-3 left-1/2 -translate-x-1/2 w-4/5 h-6 bg-black/40 rounded-full blur-[8px] -z-10" />
 
                 {/* Direct Video Playback (User's Luma Video) */}
                 {videoUrl ? (
-                  <div className="relative w-full h-full rounded-3xl overflow-hidden border-2 border-amber-400/60 shadow-[0_16px_36px_rgba(0,0,0,0.6)] bg-black flex items-center justify-center group/vid">
+                  <div
+                    className="relative w-full rounded-2xl overflow-hidden border-2 border-amber-400/80 shadow-[0_20px_45px_rgba(0,0,0,0.7)] bg-slate-950 flex items-center justify-center group/vid"
+                    style={{
+                      aspectRatio: `${videoAspect}`,
+                    }}
+                  >
                     <video
                       ref={videoRef}
                       src={videoUrl}
-                      poster="/luma_video_poster.jpg"
+                      poster="/bollukito_stage.jpg?v=5"
                       playsInline
-                      loop={!isSpeaking}
+                      autoPlay
+                      loop
                       muted={isMuted}
+                      onLoadedMetadata={(e) => {
+                        const v = e.currentTarget;
+                        if (v.videoWidth && v.videoHeight) {
+                          setVideoAspect(v.videoWidth / v.videoHeight);
+                        }
+                      }}
                       onEnded={handleVideoEnded}
-                      onClick={isSpeaking ? stopPresentation : startPresentation}
-                      className="w-full h-full object-cover cursor-pointer transition-transform duration-300 group-hover/vid:scale-105"
+                      onClick={isMuted ? handleUnmuteAndPlay : (isSpeaking ? stopPresentation : startPresentation)}
+                      className={`w-full h-full ${
+                        fitMode === 'cover' ? 'object-cover' : 'object-contain'
+                      } ${
+                        videoAlignment === 'top'
+                          ? 'object-top'
+                          : videoAlignment === 'bottom'
+                          ? 'object-bottom'
+                          : 'object-center'
+                      } cursor-pointer transition-transform duration-300 group-hover/vid:scale-[1.01]`}
                     />
 
-                    {/* Overlay play button when paused */}
-                    {!isSpeaking && (
+                    {/* Prominent Unmute callout banner when muted */}
+                    {isMuted && (
+                      <button
+                        onClick={handleUnmuteAndPlay}
+                        className="absolute inset-x-3 bottom-3 z-30 bg-gradient-to-r from-amber-400 via-amber-300 to-amber-400 hover:from-amber-300 hover:to-amber-200 text-slate-950 font-black text-xs py-2 px-3 rounded-xl shadow-2xl border-2 border-amber-300 flex items-center justify-center space-x-2 animate-bounce pointer-events-auto cursor-pointer"
+                        title="Toca para activar el sonido y escuchar la voz de Bollukito"
+                      >
+                        <Volume2 className="w-4 h-4 fill-slate-950 text-slate-950 animate-pulse" />
+                        <span>🔊 Toca para escuchar la voz</span>
+                      </button>
+                    )}
+
+                    {/* Live Voice active badge when unmuted */}
+                    {!isMuted && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsMuted(true);
+                          if (videoRef.current) videoRef.current.muted = true;
+                        }}
+                        className="absolute top-2.5 right-2.5 z-25 bg-emerald-500 hover:bg-emerald-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full shadow-lg flex items-center space-x-1.5 animate-pulse pointer-events-auto"
+                        title="Clic para silenciar"
+                      >
+                        <Volume2 className="w-3.5 h-3.5" />
+                        <span>Voz Activa</span>
+                      </button>
+                    )}
+
+                    {/* Overlay play/unmute button when hovered */}
+                    {!isSpeaking && !isMuted && (
                       <div
                         onClick={startPresentation}
                         className="absolute inset-0 bg-black/25 flex items-center justify-center cursor-pointer opacity-0 group-hover/vid:opacity-100 transition-opacity"
@@ -662,37 +796,61 @@ export function FixedBollukitoAssistant({
                       </div>
                     )}
 
-                    {!isMuted && (
-                      <div className="absolute top-2.5 right-2.5 bg-amber-400 text-slate-950 text-[10px] font-black px-2 py-0.5 rounded-full shadow-lg flex items-center space-x-1 animate-pulse">
-                        <Volume2 className="w-3 h-3" />
-                        <span>Audio Activo</span>
-                      </div>
-                    )}
+                    {/* Change video button on active video */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        fileInputRef.current?.click();
+                      }}
+                      className="absolute bottom-2.5 right-2.5 z-20 bg-slate-950/80 hover:bg-slate-900 text-amber-300 text-[10px] font-bold px-2 py-1 rounded-lg border border-amber-400/50 flex items-center space-x-1 shadow transition-all hover:scale-105 pointer-events-auto"
+                      title="Cambiar video de Bollukito"
+                    >
+                      <Upload className="w-3 h-3" />
+                      <span>Cambiar</span>
+                    </button>
                   </div>
                 ) : (
-                  /* Static 3D Model Fallback when video not yet uploaded */
+                  /* 3D Mascot Stage Card with New Bollukito */
                   <div
                     onClick={isSpeaking ? stopPresentation : startPresentation}
-                    className="relative w-full h-full flex items-center justify-center cursor-pointer"
+                    className="relative w-full aspect-[3/2] rounded-2xl overflow-hidden border-2 border-amber-400/70 shadow-[0_16px_36px_rgba(0,0,0,0.6)] bg-slate-950 flex items-center justify-center cursor-pointer group/card"
                   >
                     <img
-                      src="/bollukito_luma_fixed.png"
+                      src="/bollukito_stage.jpg?v=5"
                       alt="Bollukito Asistente Virtual 3D"
-                      className={`w-full h-full object-contain drop-shadow-[0_16px_32px_rgba(0,0,0,0.5)] hover:scale-105 active:scale-95 transition-transform duration-300 ${
-                        isSpeaking ? 'animate-cartoon-talk' : 'animate-bollukito-happy'
+                      className={`w-full h-full object-contain object-center transition-transform duration-300 group-hover/card:scale-105 ${
+                        isSpeaking ? 'brightness-110' : ''
                       }`}
                       draggable={false}
                       referrerPolicy="no-referrer"
                     />
+
+                    {/* Badge */}
+                    <div className="absolute top-2.5 left-2.5 bg-slate-950/85 backdrop-blur-sm border border-amber-400/60 text-amber-300 text-[10px] font-black px-2.5 py-0.5 rounded-full shadow flex items-center space-x-1">
+                      <span>🐾 Bollukito Oficial</span>
+                    </div>
+
+                    {/* Upload button directly on stage */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        fileInputRef.current?.click();
+                      }}
+                      className="absolute bottom-2.5 right-2.5 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 text-xs font-black px-3 py-1.5 rounded-xl shadow-xl border border-amber-300 flex items-center space-x-1.5 transition-transform hover:scale-105 pointer-events-auto"
+                      title="Subir video .mp4 de Bollukito"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Cargar .mp4</span>
+                    </button>
                   </div>
                 )}
               </div>
 
               {/* Fixed Control Bar Attached Beneath Bollukito */}
-              <div className="mt-1 bg-slate-950/95 backdrop-blur-md border border-slate-700/80 rounded-2xl px-3 py-2 shadow-2xl flex items-center space-x-2 text-xs">
+              <div className="mt-2 bg-slate-950/95 backdrop-blur-md border border-slate-700/80 rounded-2xl px-3 py-2 shadow-2xl flex items-center space-x-2 text-xs">
                 {/* Big Voice Button */}
                 <button
-                  onClick={isSpeaking ? stopPresentation : startPresentation}
+                  onClick={isMuted ? handleUnmuteAndPlay : (isSpeaking ? stopPresentation : startPresentation)}
                   className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl font-black text-xs transition-all shadow-md ${
                     isSpeaking
                       ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse'
@@ -708,7 +866,7 @@ export function FixedBollukitoAssistant({
                   ) : (
                     <>
                       <Volume2 className="w-3.5 h-3.5" />
-                      <span>🎙️ Escuchar</span>
+                      <span>🎙️ Escuchar voz</span>
                     </>
                   )}
                 </button>
@@ -734,16 +892,26 @@ export function FixedBollukitoAssistant({
                   <Phone className="w-3.5 h-3.5" />
                 </a>
 
-                {/* Sound mute toggle */}
+                {/* Sound mute toggle button */}
                 <button
-                  onClick={() => setIsMuted(!isMuted)}
-                  title={isMuted ? 'Activar sonido' : 'Silenciar'}
-                  className="p-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-slate-300 transition-colors"
+                  onClick={isMuted ? handleUnmuteAndPlay : () => {
+                    setIsMuted(true);
+                    if (videoRef.current) videoRef.current.muted = true;
+                  }}
+                  title={isMuted ? 'Activar sonido de la voz' : 'Silenciar'}
+                  className={`p-1.5 rounded-xl transition-all flex items-center space-x-1 ${
+                    isMuted
+                      ? 'bg-amber-400 text-slate-950 font-black px-2 animate-pulse ring-2 ring-amber-300'
+                      : 'bg-white/10 hover:bg-white/20 text-slate-300'
+                  }`}
                 >
                   {isMuted ? (
-                    <VolumeX className="w-3.5 h-3.5 text-red-400" />
+                    <>
+                      <VolumeX className="w-3.5 h-3.5 text-slate-950" />
+                      <span className="text-[10px]">Activar</span>
+                    </>
                   ) : (
-                    <Volume2 className="w-3.5 h-3.5 text-slate-200" />
+                    <Volume2 className="w-3.5 h-3.5 text-emerald-400" />
                   )}
                 </button>
 
@@ -818,9 +986,9 @@ export function FixedBollukitoAssistant({
               <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 flex items-center space-x-4">
                 <div className="w-20 h-20 rounded-2xl bg-amber-400/10 border border-amber-400/30 flex items-center justify-center overflow-hidden shrink-0">
                   <img
-                    src="/bollukito_luma_fixed.png"
+                    src="/bollukito_avatar.jpg?v=5"
                     alt="Bollukito 3D"
-                    className="w-16 h-16 object-contain"
+                    className="w-16 h-16 rounded-xl object-cover"
                   />
                 </div>
                 <div>
@@ -831,7 +999,7 @@ export function FixedBollukitoAssistant({
                     </span>
                   </h4>
                   <p className="text-xs text-slate-400 mt-1">
-                    Con chaleco azul y dorado de conserje, medalla con timbre y teléfono móvil en mano.
+                    Cachorro Bulldog Francés vaquita con chaleco verde bosque de Hotel Bolluk y medalla dorada.
                   </p>
                 </div>
               </div>
@@ -863,6 +1031,104 @@ export function FixedBollukitoAssistant({
                   <span className="text-[10px] text-slate-400">
                     Se guarda automáticamente con respaldo redundante
                   </span>
+                </button>
+              </div>
+
+              {/* Framing & Centering Selector */}
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-2">
+                  Encuadre y Centrado del Personaje:
+                </label>
+                <div className="grid grid-cols-2 gap-2 mb-2">
+                  <button
+                    onClick={() => {
+                      setFitMode('contain');
+                      localStorage.setItem('bollukito_fit_mode', 'contain');
+                    }}
+                    className={`p-2.5 rounded-xl border text-center transition-all ${
+                      fitMode === 'contain'
+                        ? 'border-amber-400 bg-amber-500/20 text-white font-black'
+                        : 'border-slate-800 bg-slate-950/40 text-slate-400'
+                    }`}
+                  >
+                    <div className="text-xs font-bold">Centrado Completo</div>
+                    <div className="text-[9px] text-slate-400 mt-0.5">Sin recortes (100% visible)</div>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setFitMode('cover');
+                      localStorage.setItem('bollukito_fit_mode', 'cover');
+                    }}
+                    className={`p-2.5 rounded-xl border text-center transition-all ${
+                      fitMode === 'cover'
+                        ? 'border-amber-400 bg-amber-500/20 text-white font-black'
+                        : 'border-slate-800 bg-slate-950/40 text-slate-400'
+                    }`}
+                  >
+                    <div className="text-xs font-bold">Relleno Dinámico</div>
+                    <div className="text-[9px] text-slate-400 mt-0.5">Ocupa todo el recuadro</div>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    onClick={() => {
+                      setVideoAlignment('top');
+                      localStorage.setItem('bollukito_video_align', 'top');
+                    }}
+                    className={`p-1.5 rounded-lg border text-center text-xs transition-all ${
+                      videoAlignment === 'top'
+                        ? 'border-amber-400 bg-amber-400/20 text-amber-300 font-bold'
+                        : 'border-slate-800 text-slate-400'
+                    }`}
+                  >
+                    Arriba
+                  </button>
+                  <button
+                    onClick={() => {
+                      setVideoAlignment('center');
+                      localStorage.setItem('bollukito_video_align', 'center');
+                    }}
+                    className={`p-1.5 rounded-lg border text-center text-xs transition-all ${
+                      videoAlignment === 'center'
+                        ? 'border-amber-400 bg-amber-400/20 text-amber-300 font-bold'
+                        : 'border-slate-800 text-slate-400'
+                    }`}
+                  >
+                    Centro (Óptimo)
+                  </button>
+                  <button
+                    onClick={() => {
+                      setVideoAlignment('bottom');
+                      localStorage.setItem('bollukito_video_align', 'bottom');
+                    }}
+                    className={`p-1.5 rounded-lg border text-center text-xs transition-all ${
+                      videoAlignment === 'bottom'
+                        ? 'border-amber-400 bg-amber-400/20 text-amber-300 font-bold'
+                        : 'border-slate-800 text-slate-400'
+                    }`}
+                  >
+                    Abajo
+                  </button>
+                </div>
+              </div>
+
+              {/* Sound & Voice Test */}
+              <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3 flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-bold text-white flex items-center space-x-1.5">
+                    <Volume2 className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Sonido y Voz de Bollukito</span>
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-0.5">
+                    {isMuted ? 'Silenciado actualmente' : 'Voz activa a volumen máximo'}
+                  </div>
+                </div>
+                <button
+                  onClick={handleUnmuteAndPlay}
+                  className="bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs px-3 py-1.5 rounded-lg shadow transition-transform hover:scale-105"
+                >
+                  🔊 Probar Voz
                 </button>
               </div>
 

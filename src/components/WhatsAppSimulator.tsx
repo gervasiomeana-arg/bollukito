@@ -13,8 +13,9 @@ import {
   Building,
   RotateCcw,
   Volume2,
+  UserCheck,
 } from 'lucide-react';
-import { ChatMessage, ReservationOffer, HotelConfig } from '../types';
+import { ChatMessage, ReservationOffer, HotelConfig, AvailableOption, PendingConfirmation } from '../types';
 import { PaymentModal } from './PaymentModal';
 
 interface WhatsAppSimulatorProps {
@@ -38,6 +39,27 @@ export function WhatsAppSimulator({
 
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [selectedRoomTypeId, setSelectedRoomTypeId] = useState<string | null>(null);
+  const [selectedCheckIn, setSelectedCheckIn] = useState<string | null>(null);
+  const [selectedCheckOut, setSelectedCheckOut] = useState<string | null>(null);
+  const [selectedGuests, setSelectedGuests] = useState<number>(2);
+  const [selectedRoomTypeName, setSelectedRoomTypeName] = useState<string>('');
+  const [selectedRoomNumber, setSelectedRoomNumber] = useState<string>('');
+
+  const [currentQueryCheckIn, setCurrentQueryCheckIn] = useState<string | null>(null);
+  const [currentQueryCheckOut, setCurrentQueryCheckOut] = useState<string | null>(null);
+  const [currentQueryGuests, setCurrentQueryGuests] = useState<number>(2);
+
+  const [identifiedCustomer, setIdentifiedCustomer] = useState<{ id: string; name: string; phone: string } | null>(null);
+  const [awaitingGuestData, setAwaitingGuestData] = useState<boolean>(false);
+  const [guestInputName, setGuestInputName] = useState<string>('');
+  const [guestInputPhone, setGuestInputPhone] = useState<string>('');
+
+  const [latestReservationId, setLatestReservationId] = useState<string | null>(null);
+  const [latestReservationStatus, setLatestReservationStatus] = useState<string | null>(null);
+  const [latestPaymentStatus, setLatestPaymentStatus] = useState<string | null>(null);
+
   const [activePaymentOffer, setActivePaymentOffer] = useState<ReservationOffer | null>(null);
   const [guestData, setGuestData] = useState({ name: '', doc: '', phone: '+54 9 11 5541-9988' });
   const [notificationToast, setNotificationToast] = useState<string | null>(null);
@@ -68,6 +90,32 @@ export function WhatsAppSimulator({
     if (!textToSend) setInputMessage('');
     setIsLoading(true);
 
+    // If waiting for guest contact data, intercept name and phone
+    if (awaitingGuestData && !identifiedCustomer) {
+      const digitsMatch = text.match(/(?:\+?\d{1,3}[\s-]?)?\(?\d{2,4}\)?[\s-]?\d{3,4}[\s-]?\d{3,4}|\d{7,14}/);
+      if (digitsMatch) {
+        const phone = digitsMatch[0].replace(/[^\d+]/g, '');
+        const namePart = text.replace(digitsMatch[0], '').replace(/[,\-–:]/g, ' ').replace(/\s+/g, ' ').trim();
+        const finalName = namePart.length >= 2 ? namePart : (guestInputName || 'Huésped Hotel Bolluk');
+        await handleConfirmGuestData(finalName, phone);
+        return;
+      }
+    }
+
+    // Step 9E: Check if user typed CONFIRMAR DATOS or MODIFICAR
+    const upperText = text.trim().toUpperCase();
+    const lastPendingConfMsg = [...messages].reverse().find((m) => m.pendingConfirmation && !m.pendingConfirmation.actionTaken);
+    if (lastPendingConfMsg?.pendingConfirmation) {
+      if (upperText === 'CONFIRMAR DATOS') {
+        await handleConfirmReservationData(lastPendingConfMsg.pendingConfirmation);
+        return;
+      }
+      if (upperText === 'MODIFICAR') {
+        handleModifyReservationData(lastPendingConfMsg.pendingConfirmation);
+        return;
+      }
+    }
+
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -81,6 +129,10 @@ export function WhatsAppSimulator({
 
       const data = await res.json();
       const botTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      if (data.checkIn) setCurrentQueryCheckIn(data.checkIn);
+      if (data.checkOut) setCurrentQueryCheckOut(data.checkOut);
+      if (data.guests) setCurrentQueryGuests(data.guests);
 
       let reservationOffer: ReservationOffer | undefined = undefined;
       if (data.reservationOffer) {
@@ -103,6 +155,9 @@ export function WhatsAppSimulator({
         sender: 'bot',
         text: data.reply || '¡Guau! Con gusto te ayudo con tu consulta en Hotel Bolluk.',
         timestamp: botTime,
+        availableOptions: Array.isArray(data.availableOptions) && data.availableOptions.length > 0
+          ? data.availableOptions.slice(0, 3)
+          : undefined,
         reservationOffer,
         quickReplies: data.quickReplies || [],
       };
@@ -123,6 +178,314 @@ export function WhatsAppSimulator({
       ]);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleConfirmReservationData = async (conf: PendingConfirmation) => {
+    setIsLoading(true);
+    try {
+      // 3. Si el usuario elige CONFIRMAR DATOS:
+      // actualizar la reserva mediante PATCH /api/reservations/:id
+      // cambiando solamente: reservationStatus: AWAITING_PAYMENT, paymentStatus: PENDING
+      const patchRes = await fetch(`/api/reservations/${conf.reservationId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reservationStatus: 'AWAITING_PAYMENT',
+          paymentStatus: 'PENDING',
+        }),
+      });
+
+      const botTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      if (!patchRes.ok) {
+        throw new Error('Error al actualizar reserva');
+      }
+
+      setLatestReservationStatus('AWAITING_PAYMENT');
+      setLatestPaymentStatus('PENDING');
+
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.pendingConfirmation?.reservationId === conf.reservationId) {
+            return {
+              ...m,
+              pendingConfirmation: {
+                ...m.pendingConfirmation,
+                actionTaken: 'confirmed',
+                reservationStatus: 'AWAITING_PAYMENT',
+                paymentStatus: 'PENDING',
+              },
+            };
+          }
+          return m;
+        })
+      );
+
+      // 7. Después de actualizar correctamente, mostrar:
+      // "Perfecto. Tu reserva quedó pendiente de pago."
+      // 8. Mostrar claramente: Estado: Pendiente de pago
+      // 4. NO marcarla como CONFIRMED.
+      // 5. NO simular pago.
+      // 6. NO mostrar mensajes como: pago aprobado, reserva confirmada, pago recibido.
+      const confirmMsg: ChatMessage = {
+        id: `bot-confirm-${Date.now()}`,
+        sender: 'bot',
+        text: `Perfecto. Tu reserva quedó pendiente de pago.\n\n` +
+          `📋 **Estado de la Reserva**:\n` +
+          `• Código: ${conf.reservationCode}\n` +
+          `• Habitación: ${conf.roomTypeName} ${conf.roomNumber ? `(Hab. ${conf.roomNumber})` : ''}\n` +
+          `• Estado: Pendiente de pago`,
+        timestamp: botTime,
+      };
+
+      setMessages((prev) => [...prev, confirmMsg]);
+    } catch (err) {
+      console.error('Error confirming reservation data:', err);
+      const botTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `bot-err-${Date.now()}`,
+          sender: 'bot',
+          text: 'No pude actualizar la reserva. Intentemos nuevamente.',
+          timestamp: botTime,
+        },
+      ]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleModifyReservationData = (conf: PendingConfirmation) => {
+    // 9. Si el usuario elige MODIFICAR: no cambiar el estado de la reserva. Mantenerla en PENDING.
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.pendingConfirmation?.reservationId === conf.reservationId) {
+          return {
+            ...m,
+            pendingConfirmation: {
+              ...m.pendingConfirmation,
+              actionTaken: 'modified',
+            },
+          };
+        }
+        return m;
+      })
+    );
+
+    const botTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const modMsg: ChatMessage = {
+      id: `bot-mod-${Date.now()}`,
+      sender: 'bot',
+      text: `Entendido. Tu reserva (${conf.reservationCode}) se mantiene en estado **Pendiente**.\n\n¿Qué datos te gustaría modificar?`,
+      timestamp: botTime,
+    };
+    setMessages((prev) => [...prev, modMsg]);
+  };
+
+  const createPendingReservation = async (
+    customer: { id: string; name: string; phone: string },
+    roomSelection?: {
+      roomId: string;
+      roomTypeId: string;
+      checkIn: string;
+      checkOut: string;
+      guests: number;
+      roomTypeName: string;
+      roomNumber: string;
+    }
+  ) => {
+    setIsLoading(true);
+    const roomId = roomSelection?.roomId || selectedRoomId;
+    const roomTypeId = roomSelection?.roomTypeId || selectedRoomTypeId;
+    const checkIn = roomSelection?.checkIn || selectedCheckIn || '2026-09-20';
+    const checkOut = roomSelection?.checkOut || selectedCheckOut || '2026-09-22';
+    const guests = roomSelection?.guests || selectedGuests || 2;
+    const roomTypeName = roomSelection?.roomTypeName || selectedRoomTypeName || 'Habitación';
+    const roomNumber = roomSelection?.roomNumber || selectedRoomNumber || '';
+
+    try {
+      const res = await fetch('/api/reservations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customerId: customer.id,
+          selectedRoomTypeId: roomTypeId,
+          selectedRoomId: roomId,
+          selectedCheckIn: checkIn,
+          selectedCheckOut: checkOut,
+          selectedGuests: guests,
+          reservationStatus: 'PENDING',
+          paymentStatus: 'NOT_REQUIRED',
+          source: 'CHAT',
+        }),
+      });
+
+      const botTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      if (!res.ok) {
+        // 8. Si ocurre un error al crear la reserva: no perder la selección del usuario
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `bot-err-${Date.now()}`,
+            sender: 'bot',
+            text: 'No pude completar la reserva. Intentemos nuevamente.',
+            timestamp: botTime,
+          },
+        ]);
+        return;
+      }
+
+      const resData = await res.json();
+      setAwaitingGuestData(false);
+
+      setLatestReservationId(resData.id);
+      setLatestReservationStatus('PENDING');
+      setLatestPaymentStatus('NOT_REQUIRED');
+
+      const totalAmountVal = resData.totalPrice || resData.totalAmount;
+      const formattedTotal = totalAmountVal ? `$${Number(totalAmountVal).toLocaleString('es-AR')}` : '';
+
+      // Step 9E: Resumen de confirmación con:
+      // código de reserva, habitación, check-in, check-out, huéspedes, total si existe, estado actual
+      const summaryText = `Perfecto, preparé tu reserva.\n\n` +
+        `📋 **Resumen de Confirmación**:\n` +
+        `• Código de reserva: ${resData.bookingId || resData.reservationCode}\n` +
+        `• Habitación: ${roomTypeName} ${roomNumber ? `(Hab. ${roomNumber})` : ''}\n` +
+        `• Check-in: ${resData.checkIn || checkIn}\n` +
+        `• Check-out: ${resData.checkOut || checkOut}\n` +
+        `• Huéspedes: ${resData.guests || guests}\n` +
+        (formattedTotal ? `• Total: ${formattedTotal}\n` : '') +
+        `• Estado: Pendiente\n\n` +
+        `Por favor, confirma tus datos para continuar:`;
+
+      const pendingConfirmation: PendingConfirmation = {
+        reservationId: resData.id,
+        reservationCode: resData.bookingId || resData.reservationCode,
+        roomTypeName,
+        roomNumber,
+        checkIn: resData.checkIn || checkIn,
+        checkOut: resData.checkOut || checkOut,
+        guests: Number(resData.guests || guests),
+        totalAmount: totalAmountVal ? Number(totalAmountVal) : undefined,
+        reservationStatus: 'PENDING',
+        paymentStatus: 'NOT_REQUIRED',
+      };
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `bot-pending-summary-${Date.now()}`,
+          sender: 'bot',
+          text: summaryText,
+          timestamp: botTime,
+          pendingConfirmation,
+        },
+      ]);
+    } catch (err) {
+      console.error('Error creating pending reservation:', err);
+      const botTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `bot-err-${Date.now()}`,
+          sender: 'bot',
+          text: 'No pude completar la reserva. Intentemos nuevamente.',
+          timestamp: botTime,
+        },
+      ]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleConfirmGuestData = async (name: string, phone: string) => {
+    if (!name.trim() || !phone.trim() || isLoading) return;
+
+    setIsLoading(true);
+    const userTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const userMsg: ChatMessage = {
+      id: `user-${Date.now()}`,
+      sender: 'user',
+      text: `${name.trim()} - Tel: ${phone.trim()}`,
+      timestamp: userTime,
+    };
+    setMessages((prev) => [...prev, userMsg]);
+
+    try {
+      // 3. Con nombre + teléfono: buscar cliente existente o crearlo
+      const custRes = await fetch('/api/customers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          phone: phone.trim(),
+        }),
+      });
+
+      if (!custRes.ok) {
+        throw new Error('Error al procesar cliente');
+      }
+
+      const { customer } = await custRes.json();
+      setIdentifiedCustomer(customer);
+
+      // 4. Luego crear una reserva real usando: POST /api/reservations
+      await createPendingReservation(customer);
+    } catch (err) {
+      console.error('Error handling guest data:', err);
+      const botTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `bot-err-${Date.now()}`,
+          sender: 'bot',
+          text: 'No pude completar la reserva. Intentemos nuevamente.',
+          timestamp: botTime,
+        },
+      ]);
+      setIsLoading(false);
+    }
+  };
+
+  const handleSelectOption = (option: AvailableOption) => {
+    const checkInVal = currentQueryCheckIn || '2026-09-20';
+    const checkOutVal = currentQueryCheckOut || '2026-09-22';
+    const guestsVal = currentQueryGuests || 2;
+
+    // 1. Guardar en el estado del chat
+    setSelectedRoomId(option.roomId);
+    setSelectedRoomTypeId(option.roomTypeId);
+    setSelectedCheckIn(checkInVal);
+    setSelectedCheckOut(checkOutVal);
+    setSelectedGuests(guestsVal);
+    setSelectedRoomTypeName(option.roomTypeName);
+    setSelectedRoomNumber(option.roomNumber);
+
+    const botTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    // 2. Si todavía no existe un cliente identificado, pedir únicamente nombre y teléfono
+    if (!identifiedCustomer) {
+      setAwaitingGuestData(true);
+      const promptMsg: ChatMessage = {
+        id: `bot-prompt-${Date.now()}`,
+        sender: 'bot',
+        text: `Elegiste ${option.roomTypeName} - Hab. ${option.roomNumber}.\n\nPara preparar tu reserva, por favor indícame tu **nombre** y **teléfono**.`,
+        timestamp: botTime,
+      };
+      setMessages((prev) => [...prev, promptMsg]);
+    } else {
+      createPendingReservation(identifiedCustomer, {
+        roomId: option.roomId,
+        roomTypeId: option.roomTypeId,
+        checkIn: checkInVal,
+        checkOut: checkOutVal,
+        guests: guestsVal,
+        roomTypeName: option.roomTypeName,
+        roomNumber: option.roomNumber,
+      });
     }
   };
 
@@ -239,12 +602,19 @@ export function WhatsAppSimulator({
 
       {/* Simulator Container */}
       <div className="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden flex flex-col h-[750px]">
+        {/* Chat Selection State Inspector (Step 9C) */}
+        <span
+          className="hidden"
+          data-testid="selected-room-state"
+          data-room-id={selectedRoomId || ''}
+          data-room-type-id={selectedRoomTypeId || ''}
+        />
         {/* WhatsApp Top Bar */}
         <div className="bg-[#075e54] text-white px-4 py-3 flex items-center justify-between shadow-md">
           <div className="flex items-center space-x-3">
             <div className="relative">
               <img
-                src="/bollukito.jpg"
+                src="/bollukito_avatar.jpg?v=5"
                 alt="Bollukito"
                 className={`w-11 h-11 rounded-full object-cover ring-2 ring-emerald-300 shadow-md ${
                   isLoading ? 'animate-bollukito-happy ring-amber-300 ring-4' : 'animate-bollukito-breathe animate-mascot-glow'
@@ -318,6 +688,147 @@ export function WhatsAppSimulator({
                 <div className="whitespace-pre-line leading-relaxed text-slate-800">
                   {msg.text}
                 </div>
+
+                {/* Available Options Cards (Step 9C) */}
+                {msg.availableOptions && msg.availableOptions.length > 0 && (
+                  <div className="mt-3 space-y-2.5 w-full max-w-full">
+                    {msg.availableOptions.slice(0, 3).map((option) => {
+                      const isSelected = selectedRoomId === option.roomId;
+                      const formattedRate = Number(option.baseRate).toLocaleString('es-AR');
+                      return (
+                        <div
+                          key={option.roomId}
+                          data-testid={`available-option-${option.roomNumber}`}
+                          className={`w-full box-border p-3.5 rounded-xl border text-xs transition-all ${
+                            isSelected
+                              ? 'bg-emerald-50 border-emerald-500 ring-2 ring-emerald-400/40 shadow-xs'
+                              : 'bg-slate-50/90 border-slate-200 hover:border-emerald-300 shadow-2xs'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="font-bold text-slate-900 text-sm leading-tight truncate">
+                                {option.roomTypeName}
+                              </div>
+                              <div className="text-slate-600 font-semibold text-xs mt-0.5">
+                                Hab. {option.roomNumber}
+                              </div>
+                              <div className="text-slate-500 text-xs mt-1">
+                                Hasta {option.capacity} {option.capacity === 1 ? 'huésped' : 'huéspedes'}
+                              </div>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <div className="font-extrabold text-emerald-800 text-sm whitespace-nowrap">
+                                ${formattedRate}
+                              </div>
+                              <div className="text-[11px] text-slate-500 whitespace-nowrap">
+                                por noche
+                              </div>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            data-testid={`select-room-${option.roomNumber}`}
+                            onClick={() => handleSelectOption(option)}
+                            className={`w-full mt-3 py-2 px-3 rounded-lg font-bold text-xs uppercase tracking-wider transition-all shadow-2xs flex items-center justify-center space-x-1.5 ${
+                              isSelected
+                                ? 'bg-emerald-700 text-white'
+                                : 'bg-emerald-600 hover:bg-emerald-700 text-white active:scale-[0.99]'
+                            }`}
+                          >
+                            <span>{isSelected ? '✓ ELEGIDO' : 'ELEGIR'}</span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Step 9E: Resumen de confirmación con acciones CONFIRMAR DATOS / MODIFICAR */}
+                {msg.pendingConfirmation && (
+                  <div
+                    data-testid="confirmation-card"
+                    className="mt-3 p-3.5 rounded-xl border border-slate-200 bg-slate-50/90 text-xs space-y-2.5 shadow-2xs"
+                  >
+                    <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                      <div className="font-bold text-slate-800 text-sm">Resumen de Confirmación</div>
+                      <span
+                        data-testid="confirmation-status-badge"
+                        className={`px-2 py-0.5 rounded-full text-[11px] font-semibold border ${
+                          msg.pendingConfirmation.actionTaken === 'confirmed'
+                            ? 'bg-amber-100 text-amber-800 border-amber-300'
+                            : 'bg-blue-100 text-blue-800 border-blue-200'
+                        }`}
+                      >
+                        {msg.pendingConfirmation.actionTaken === 'confirmed'
+                          ? 'Pendiente de pago'
+                          : 'Pendiente'}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1 text-slate-700 leading-snug">
+                      <div>
+                        <span className="font-semibold text-slate-900">Código de reserva:</span>{' '}
+                        <span data-testid="conf-code">{msg.pendingConfirmation.reservationCode}</span>
+                      </div>
+                      <div>
+                        <span className="font-semibold text-slate-900">Habitación:</span>{' '}
+                        {msg.pendingConfirmation.roomTypeName}{' '}
+                        {msg.pendingConfirmation.roomNumber ? `(Hab. ${msg.pendingConfirmation.roomNumber})` : ''}
+                      </div>
+                      <div>
+                        <span className="font-semibold text-slate-900">Check-in:</span>{' '}
+                        {msg.pendingConfirmation.checkIn}
+                      </div>
+                      <div>
+                        <span className="font-semibold text-slate-900">Check-out:</span>{' '}
+                        {msg.pendingConfirmation.checkOut}
+                      </div>
+                      <div>
+                        <span className="font-semibold text-slate-900">Huéspedes:</span>{' '}
+                        {msg.pendingConfirmation.guests}
+                      </div>
+                      {msg.pendingConfirmation.totalAmount !== undefined && (
+                        <div>
+                          <span className="font-semibold text-slate-900">Total:</span>{' '}
+                          ${Number(msg.pendingConfirmation.totalAmount).toLocaleString('es-AR')}
+                        </div>
+                      )}
+                      <div>
+                        <span className="font-semibold text-slate-900">Estado actual:</span>{' '}
+                        <span data-testid="conf-status-text">
+                          {msg.pendingConfirmation.actionTaken === 'confirmed'
+                            ? 'Pendiente de pago'
+                            : 'Pendiente'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {!msg.pendingConfirmation.actionTaken && (
+                      <div className="pt-2 flex flex-col sm:flex-row gap-2 border-t border-slate-200">
+                        <button
+                          type="button"
+                          data-testid="btn-confirm-data"
+                          onClick={() => handleConfirmReservationData(msg.pendingConfirmation!)}
+                          disabled={isLoading}
+                          className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold rounded-lg text-xs uppercase tracking-wide transition-colors shadow-xs text-center"
+                        >
+                          CONFIRMAR DATOS
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="btn-modify-data"
+                          onClick={() => handleModifyReservationData(msg.pendingConfirmation!)}
+                          disabled={isLoading}
+                          className="flex-1 py-2 px-3 bg-slate-200 hover:bg-slate-300 disabled:opacity-50 text-slate-800 font-semibold rounded-lg text-xs uppercase tracking-wide transition-colors text-center"
+                        >
+                          MODIFICAR
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Reservation Offer Card if generated */}
                 {msg.reservationOffer && (
@@ -394,6 +905,51 @@ export function WhatsAppSimulator({
             </div>
           ))}
 
+          {/* Customer Input Card if awaiting guest data */}
+          {awaitingGuestData && !identifiedCustomer && (
+            <div className="flex flex-col items-start">
+              <div className="bg-white rounded-2xl rounded-tl-none p-4 shadow-sm border border-emerald-200 max-w-[85%] sm:max-w-[75%] space-y-3">
+                <div className="flex items-center space-x-2 text-xs font-bold text-emerald-900 border-b border-emerald-100 pb-1.5">
+                  <UserCheck className="w-4 h-4 text-emerald-600" />
+                  <span>Datos de contacto del huésped</span>
+                </div>
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-600 mb-0.5">Nombre completo</label>
+                    <input
+                      type="text"
+                      id="guest-name-input"
+                      placeholder="Ej: Juan Pérez"
+                      value={guestInputName}
+                      onChange={(e) => setGuestInputName(e.target.value)}
+                      className="w-full px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs text-slate-900 focus:ring-1 focus:ring-emerald-500 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-600 mb-0.5">Teléfono de contacto</label>
+                    <input
+                      type="tel"
+                      id="guest-phone-input"
+                      placeholder="Ej: +54 9 11 5544-3322"
+                      value={guestInputPhone}
+                      onChange={(e) => setGuestInputPhone(e.target.value)}
+                      className="w-full px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs text-slate-900 focus:ring-1 focus:ring-emerald-500 outline-none"
+                    />
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  id="btn-confirm-guest"
+                  onClick={() => handleConfirmGuestData(guestInputName, guestInputPhone)}
+                  disabled={!guestInputName.trim() || !guestInputPhone.trim() || isLoading}
+                  className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-lg font-bold text-xs shadow-xs transition-colors"
+                >
+                  Continuar con la Reserva
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Typing Indicator */}
           {isLoading && (
             <div className="flex items-start space-x-2">
@@ -411,6 +967,21 @@ export function WhatsAppSimulator({
           <div ref={messagesEndRef} />
           </div>
         </div>
+
+        {/* Hidden test span to verify state */}
+        <span
+          className="hidden"
+          data-testid="selected-room-state"
+          data-room-id={selectedRoomId || ''}
+          data-room-type-id={selectedRoomTypeId || ''}
+          data-check-in={selectedCheckIn || ''}
+          data-check-out={selectedCheckOut || ''}
+          data-guests={selectedGuests?.toString() || ''}
+          data-customer-id={identifiedCustomer?.id || ''}
+          data-latest-reservation-id={latestReservationId || ''}
+          data-latest-reservation-status={latestReservationStatus || ''}
+          data-latest-payment-status={latestPaymentStatus || ''}
+        />
 
         {/* Preset quick test buttons */}
         <div className="bg-slate-100 px-4 py-1.5 border-t border-slate-200 flex items-center space-x-2 overflow-x-auto text-xs text-slate-600 shrink-0">

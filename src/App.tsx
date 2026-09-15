@@ -57,7 +57,7 @@ export default function App() {
     ],
   });
 
-  // Fetch initial reservations from server
+  // Fetch initial reservations and hotel config from server
   useEffect(() => {
     fetch('/api/reservations')
       .then((res) => res.json())
@@ -67,6 +67,27 @@ export default function App() {
         }
       })
       .catch((err) => console.error('Error loading reservations:', err));
+
+    fetch('/api/hotel-config')
+      .then((res) => res.json())
+      .then((data) => {
+        const pgConfig = data?.hotelConfig || data;
+        if (pgConfig && (pgConfig.checkInTime || pgConfig.checkOutTime || pgConfig.id)) {
+          setHotelConfig((prev) => ({
+            ...prev,
+            checkInTime: pgConfig.checkInTime || prev.checkInTime,
+            checkOutTime: pgConfig.checkOutTime || prev.checkOutTime,
+            breakfastHours: pgConfig.breakfastInfo || prev.breakfastHours,
+            breakfastInfo: pgConfig.breakfastInfo || prev.breakfastInfo,
+            parkingInfo: pgConfig.parkingInfo || prev.parkingInfo,
+            petPolicy: pgConfig.petPolicy || prev.petPolicy,
+            cancellationPolicy: pgConfig.cancellationPolicy || prev.cancellationPolicy,
+            depositPolicy: pgConfig.depositPolicy || prev.depositPolicy,
+            services: pgConfig.services || prev.services,
+          }));
+        }
+      })
+      .catch((err) => console.error('Error loading hotel config in App:', err));
   }, []);
 
   const handleNewReservation = (newRes: ConfirmedReservation) => {

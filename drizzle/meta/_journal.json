@@ -1,0 +1,55 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1789071174100,
+      "tag": "0000_overconfident_gauntlet",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1789071576328,
+      "tag": "0001_flimsy_ultron",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789073604956,
+      "tag": "0002_amused_vance_astro",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789074560196,
+      "tag": "0003_good_invaders",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789151231036,
+      "tag": "0004_calm_bloodstorm",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789152777561,
+      "tag": "0005_robust_riptide",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789330840760,
+      "tag": "0006_thick_blazing_skull",
+      "breakpoints": true
+    }
+  ]
+}

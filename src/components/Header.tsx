@@ -15,8 +15,8 @@ export function Header({ activeTab, setActiveTab, pendingCount }: HeaderProps) {
           <div className="flex items-center space-x-3">
             <div className="relative">
               <img
-                src="/bollukito.jpg"
-                alt="Bollukito Mascota"
+                src="/bollukito_avatar.jpg?v=5"
+                alt="Bollukito Mascota Oficial"
                 className="w-11 h-11 rounded-full object-cover ring-2 ring-emerald-400/80 shadow-md animate-bollukito-breathe animate-mascot-glow hover:animate-bollukito-happy transition-transform cursor-pointer"
                 referrerPolicy="no-referrer"
               />
